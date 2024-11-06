@@ -84,12 +84,16 @@ int64_t timer_elapsed(int64_t then) {
 } // timer_ticks() = 주어진 시점(then)을 기준으로 OS가 부팅된 이후의 틱 수를 반환
 
 /* Suspends execution for approximately TICKS timer ticks. */
+/* 기존 코드와의 차이점:
+    1. thread_sleep() 함수를 사용하지 않고 while문과 thread_yield()를 사용
+    2. busy waiting 방식으로 구현되어 CPU 자원이 낭비됨
+    3. 스레드가 block 상태가 되지 않고 ready 상태로 유지됨
+    4. sleep_list를 사용하지 않아 스레드 관리가 비효율적임 */
 void timer_sleep(int64_t ticks) {
     int64_t start = timer_ticks(); // timer_ticks() = OS가 부팅된 이후의 틱 수를 반환
 
     ASSERT(intr_get_level() == INTR_ON); // 인터럽트가 활성화되어 있는지 확인
-    while (timer_elapsed(start) < ticks) // timer_elapsed(start) = OS가 부팅된 이후의 틱 수 - start
-        thread_yield();                  // 현재 스레드를 양보하고 다른 스레드로 전환
+    thread_sleep(start + ticks); // 현재 시각 start + 잠들 시간 ticks = 스레드를 잠들게 함
 }
 
 /* Suspends execution for approximately MS milliseconds. */
@@ -106,8 +110,9 @@ void timer_print_stats(void) { printf("Timer: %" PRId64 " ticks\n", timer_ticks(
 
 /* Timer interrupt handler. */
 static void timer_interrupt(struct intr_frame *args UNUSED) {
-    ticks++;
-    thread_tick();
+    ticks++; // 틱 수 증가
+    thread_tick(); // 틱 수 증가
+    thread_awake(ticks); // 깨어날 시간이 된 스레드를 깨어나게 함
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer

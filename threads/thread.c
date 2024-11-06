@@ -27,6 +27,7 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list ready_list;
+static struct list sleep_list;
 
 /* Idle thread. */
 static struct thread *idle_thread;
@@ -61,6 +62,9 @@ static struct thread *next_thread_to_run(void);
 static void init_thread(struct thread *, const char *name, int priority);
 static void do_schedule(int status);
 static void schedule(void);
+void thread_sleep(int64_t ticks);
+void thread_awake(int64_t ticks);
+bool compare_wakeup_ticks(const struct list_elem *a, const struct list_elem *b, void *aux);
 static tid_t allocate_tid(void);
 
 /* Returns true if T appears to point to a valid thread. */
@@ -103,6 +107,7 @@ void thread_init(void) {
     /* Init the globla thread context */
     lock_init(&tid_lock);        // 스레드 ID 잠금 초기화
     list_init(&ready_list);      // 준비 목록 초기화
+    list_init(&sleep_list);      // 잠든 목록 초기화
     list_init(&destruction_req); // 소멸 요청 목록 초기화
 
     /* Set up a thread structure for the running thread. */
@@ -112,23 +117,27 @@ void thread_init(void) {
     initial_thread->tid = allocate_tid();             // 초기 스레드 ID 할당
 }
 
-/* Starts preemptive thread scheduling by enabling interrupts.
-   Also creates the idle thread. */
+/* 선점형 스레드 스케줄링을 시작하고 아이들 스레드를 생성합니다. */
 void thread_start(void) {
-    /* Create the idle thread. */
+    /* 아이들 스레드 생성 */
     struct semaphore idle_started;
     sema_init(&idle_started, 0);                         // 아이들 스레드 시작 세마포어 초기화
     thread_create("idle", PRI_MIN, idle, &idle_started); // 아이들 스레드 생성
 
-    /* Start preemptive thread scheduling. */
+    /* 선점형 스레드 스케줄링 시작 */
     intr_enable(); // 인터럽트 활성화
 
-    /* Wait for the idle thread to initialize idle_thread. */
-    sema_down(&idle_started); // 아이들 스레드가 idle_thread를 초기화할 때까지 대기
+    /* 아이들 스레드가 idle_thread를 초기화할 때까지 대기 */
+    sema_down(&idle_started);
 }
 
-/* Called by the timer interrupt handler at each timer tick.
-   Thus, this function runs in an external interrupt context. */
+/* 타이머 인터럽트 핸들러에 의해 각 타이머 틱마다 호출됩니다.
+   따라서 이 함수는 외부 인터럽트 컨텍스트에서 실행됩니다.
+
+   이 함수는 현재 실행 중인 스레드의 통계를 업데이트하고
+   스레드의 실행 시간이 TIME_SLICE를 초과하면 스레드를 선점합니다.
+   idle_ticks, kernel_ticks, user_ticks 등의 통계를 관리하여
+   시스템의 스레드 실행 현황을 모니터링합니다. */
 void thread_tick(void) {
     struct thread *t = thread_current(); // 현재 실행 중인 스레드 가져오기
 
@@ -152,21 +161,18 @@ void thread_print_stats(void) {
     printf("Thread: %lld idle ticks, %lld kernel ticks, %lld user ticks\n", idle_ticks, kernel_ticks, user_ticks);
 }
 
-/* Creates a new kernel thread named NAME with the given initial
-   PRIORITY, which executes FUNCTION passing AUX as the argument,
-   and adds it to the ready queue.  Returns the thread identifier
-   for the new thread, or TID_ERROR if creation fails.
+/* NAME이라는 이름과 주어진 초기 PRIORITY를 가진 새로운 커널 스레드를 생성합니다.
+   이 스레드는 FUNCTION을 실행하며 AUX를 인자로 전달하고, ready 큐에 추가됩니다.
+   생성된 새 스레드의 식별자를 반환하며, 생성에 실패하면 TID_ERROR를 반환합니다.
 
-   If thread_start() has been called, then the new thread may be
-   scheduled before thread_create() returns.  It could even exit
-   before thread_create() returns.  Contrariwise, the original
-   thread may run for any amount of time before the new thread is
-   scheduled.  Use a semaphore or some other form of
-   synchronization if you need to ensure ordering.
+   thread_start()가 호출된 경우, 새 스레드는 thread_create()가 반환되기 전에
+   스케줄될 수 있습니다. 심지어 thread_create()가 반환되기 전에 종료될 수도 있습니다.
+   반대로 원래 스레드는 새 스레드가 스케줄되기 전에 임의의 시간 동안 실행될 수 있습니다.
+   순서를 보장해야 하는 경우 세마포어나 다른 형태의 동기화를 사용하세요.
 
-   The code provided sets the new thread's `priority' member to
-   PRIORITY, but no actual priority scheduling is implemented.
-   Priority scheduling is the goal of Problem 1-3. */
+   제공된 코드는 새 스레드의 'priority' 멤버를 PRIORITY로 설정하지만,
+   실제 우선순위 스케줄링은 구현되어 있지 않습니다.
+   우선순위 스케줄링은 Problem 1-3의 목표입니다. */
 tid_t thread_create(const char *name, int priority, thread_func *function, void *aux) {
     struct thread *t; // 스레드 포인터
     tid_t tid;        // 스레드 ID
@@ -350,7 +356,16 @@ static void idle(void *idle_started_ UNUSED) {
     }
 }
 
-/* Function used as the basis for a kernel thread. */
+/* 커널 스레드 함수
+   새로 생성된 스레드가 실행할 함수와 인자를 받아 실제 스레드의 실행을 시작합니다.
+   이 함수는 thread_create()에서 생성된 스레드의 시작점이 되며,
+   다음과 같은 작업을 수행합니다:
+   1. 인터럽트를 활성화하여 스레드가 인터럽트를 처리할 수 있도록 합니다.
+   2. 전달받은 스레드 함수를 실행합니다.
+   3. 스레드 함수가 반환되면 thread_exit()을 호출하여 스레드를 종료합니다.
+   
+   이 함수는 스레드의 컨텍스트에서 실행되며, thread_create()에서 설정한
+   스택과 레지스터 상태를 이용하여 새로운 실행 환경을 구성합니다. */
 static void kernel_thread(thread_func *function, void *aux) {
     ASSERT(function != NULL); // 함수가 NULL이 아닌지 확인
 
@@ -539,14 +554,64 @@ static void schedule(void) {
     }
 }
 
+/* 현재 실행 중인 스레드를 잠들게 하고, 일정 시간 후에 깨어나도록 합니다.
+   이 함수는 timer_sleep() 함수에서 호출되며, busy waiting을 방지하기 위해 사용됩니다.
+   스레드를 sleep_list에 삽입하고 THREAD_BLOCKED 상태로 변경합니다.
+   sleep_list는 깨어날 시간(wakeup_ticks) 순으로 정렬되어 있으며,
+   매 타이머 틱마다 thread_awake() 함수가 호출되어 깨어날 시간이 된 스레드들을 깨웁니다.
+   인터럽트를 비활성화하여 race condition을 방지하고,
+   idle 스레드는 절대 잠들지 않도록 보장합니다. */
+void thread_sleep(int64_t ticks) {
+    struct thread *cur = thread_current();      // 현재 실행 중인 스레드
+    enum intr_level old_level = intr_disable(); // 이전 인터럽트 레벨
+
+    ASSERT(cur != idle_thread); // 현재 실행 중인 스레드가 idle_thread가 아닌지 확인
+
+    cur->wakeup_ticks = ticks;                                                // 일어날 시간을 저장
+    list_insert_ordered(&sleep_list, &cur->elem, compare_wakeup_ticks, NULL); // sleep_list 에 추가
+    thread_block();                                                           // block 상태로 변경
+
+    intr_set_level(old_level); // 인터럽트 레벨 복원
+}
+
+/* sleep_list를 wakeup_ticks 기준으로 정렬하기 위한 비교 함수 */
+bool compare_wakeup_ticks(const struct list_elem *a, const struct list_elem *b, void *aux) {
+    const struct thread *t1 = list_entry(a, struct thread, elem); // 스레드 1
+    const struct thread *t2 = list_entry(b, struct thread, elem); // 스레드 2
+    return t1->wakeup_ticks < t2->wakeup_ticks; // 스레드 1의 깨어날 시간이 스레드 2의 깨어날 시간보다 작은지 확인
+}
+
+/* 현재 시간(ticks)이 되어 깨어나야 할 스레드들을 깨웁니다.
+   sleep_list에서 깨어날 시간(wakeup_ticks)이 현재 시간보다 작거나 같은 스레드들을 찾아
+   리스트에서 제거하고 THREAD_READY 상태로 변경합니다.
+   sleep_list는 wakeup_ticks 기준으로 오름차순 정렬되어 있으므로,
+   더 이상 깨워야 할 스레드가 없다고 판단되면 순회를 중단합니다.
+   이 함수는 매 타이머 인터럽트마다 호출되며, race condition 방지를 위해
+   인터럽트를 비활성화한 상태에서 동작합니다. */
+void thread_awake(int64_t ticks) {
+    struct list_elem *e = list_begin(&sleep_list); // sleep_list 의 첫 번째 요소
+    enum intr_level old_level = intr_disable();    // 인터럽트 off
+
+    while (e != list_end(&sleep_list)) {
+        struct thread *thr = list_entry(e, struct thread, elem); // 스레드
+
+        if (thr->wakeup_ticks <= ticks) {
+            e = list_remove(e);  // 스레드 제거
+            thread_unblock(thr); // 스레드 활성화
+        } else
+            break;
+    }
+    intr_set_level(old_level); // 인터럽트 레벨 복원
+}
+
 /* Returns a tid to use for a new thread. */
 static tid_t allocate_tid(void) {
-    static tid_t next_tid = 1;
-    tid_t tid;
+    static tid_t next_tid = 1; // 다음에 할당할 스레드 ID
+    tid_t tid; // 할당된 스레드 ID
 
-    lock_acquire(&tid_lock);
-    tid = next_tid++;
-    lock_release(&tid_lock);
+    lock_acquire(&tid_lock); // 잠금 획득   
+    tid = next_tid++; // 다음에 할당할 스레드 ID 증가
+    lock_release(&tid_lock); // 잠금 해제
 
-    return tid;
+    return tid; // 할당된 스레드 ID 반환
 }
