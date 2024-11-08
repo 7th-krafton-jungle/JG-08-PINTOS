@@ -180,7 +180,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     ASSERT(function != NULL); // 함수가 NULL이 아닌지 확인
 
     /* Allocate thread. */
-    t = palloc_get_page(PAL_ZERO);
+    t = palloc_get_page(PAL_ZERO); // 페이지 할당
     if (t == NULL)
         return TID_ERROR; // 메모리 할당 실패 시 TID_ERROR 반환
 
@@ -201,6 +201,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
 
     /* Add to run queue. */
     thread_unblock(t); // 스레드를 준비 목록에 추가
+    thread_preemption(); // 선점 테스트 함수 호출
 
     return tid; // 스레드 ID 반환
 }
@@ -218,32 +219,36 @@ void thread_block(void) {
     schedule();
 }
 
-/* Transitions a blocked thread T to the ready-to-run state.
-   This is an error if T is not blocked.  (Use thread_yield() to
-   make the running thread ready.)
+/* 차단된 스레드 T를 실행 가능한(ready-to-run) 상태로 전환하고 ready_list에 추가합니다.
+   이 함수는 스레드 T가 차단된(blocked) 상태가 아닌 경우 오류가 발생합니다.
+   (실행 중인 스레드를 ready 상태로 만들려면 thread_yield()를 사용하세요.)
 
-   This function does not preempt the running thread.  This can
-   be important: if the caller had disabled interrupts itself,
-   it may expect that it can atomically unblock a thread and
-   update other data. */
+   스레드를 ready_list에 추가할 때는 우선순위에 따라 정렬된 상태로 삽입됩니다.
+   이는 compare_priority() 함수를 사용하여 수행되며, 우선순위가 높은 스레드가
+   리스트의 앞쪽에 위치하게 됩니다.
+
+   이 함수는 현재 실행 중인 스레드를 선점(preempt)하지 않으며, 인터럽트를 비활성화한
+   상태에서 동작합니다. 이는 스레드의 상태 변경과 ready_list 삽입이 원자적으로
+   수행되어야 하기 때문입니다. 함수 종료 시 이전 인터럽트 상태로 복원됩니다. */
 void thread_unblock(struct thread *t) {
     enum intr_level old_level;
 
-    ASSERT(is_thread(t));
+    ASSERT(is_thread(t));                // 스레드가 유효한지 확인
+    old_level = intr_disable();          // 인터럽트 비활성화
+    ASSERT(t->status == THREAD_BLOCKED); // 스레드 상태가 차단된 상태인지 확인
 
-    old_level = intr_disable();
-    ASSERT(t->status == THREAD_BLOCKED);
-    list_push_back(&ready_list, &t->elem);
-    t->status = THREAD_READY;
-    intr_set_level(old_level);
+    list_insert_ordered(&ready_list, &t->elem, compare_priority, NULL); // 우선순위에 따라 정렬된 상태로 삽입
+
+    t->status = THREAD_READY;  // 스레드 상태를 준비 상태로 설정
+    intr_set_level(old_level); // 이전 인터럽트 레벨 복원
 }
 
 /* Returns the name of the running thread. */
 const char *thread_name(void) { return thread_current()->name; }
 
-/* Returns the running thread.
-   This is running_thread() plus a couple of sanity checks.
-   See the big comment at the top of thread.h for details. */
+/* 현재 실행 중인 스레드를 반환합니다.
+   이 함수는 running_thread() 함수에 몇 가지 안전성 검사를 추가한 것입니다.
+   자세한 내용은 thread.h 파일 상단의 큰 주석을 참조하세요. */
 struct thread *thread_current(void) {
     struct thread *t = running_thread();
 
@@ -287,17 +292,40 @@ void thread_yield(void) {
 
     old_level = intr_disable(); // 인터럽트 비활성화
     if (curr != idle_thread)
-        list_push_back(&ready_list,
-                       &curr->elem); // 현재 스레드를 준비 목록에 추가
-    do_schedule(THREAD_READY);       // 스케줄러 실행
-    intr_set_level(old_level);       // 이전 인터럽트 레벨 복원
+        /* 우선순위 순서대로 정렬된 상태를 유지하기 위해 list_insert_ordered() 사용
+         * list_push_back()은 O(1)이지만 정렬되지 않은 상태로 삽입되어 스케줄링 시 우선순위 확인에 O(n) 소요
+         * list_insert_ordered()는 삽입 시 O(n)이 소요되지만 정렬된 상태를 유지하여 스케줄링 성능 향상 */
+        list_insert_ordered(&ready_list, &curr->elem, compare_priority, NULL);
+
+    do_schedule(THREAD_READY); // 스케줄러 실행
+    intr_set_level(old_level); // 이전 인터럽트 레벨 복원
 }
 
-/* Sets the current thread's priority to NEW_PRIORITY. */
-void thread_set_priority(int new_priority) { thread_current()->priority = new_priority; }
+/* 두 요소의 우선순위를 비교하는 함수
+   우선순위가 높은 스레드가 먼저 실행되도록 함 */
+bool compare_priority(const struct list_elem *a, const struct list_elem *b, void *aux) {
+    return list_entry(a, struct thread, elem)->priority > list_entry(b, struct thread, elem)->priority;
+}
 
-/* Returns the current thread's priority. */
+/* 현재 스레드의 우선순위를 NEW_PRIORITY로 설정합니다. */
+void thread_set_priority(int new_priority) {
+    thread_current()->priority = new_priority; // 현재 스레드의 우선순위를 새로운 우선순위로 설정
+    thread_preemption(); // 선점 테스트 함수 호출
+}
+
+/* 현재 스레드의 우선순위를 반환합니다. */
 int thread_get_priority(void) { return thread_current()->priority; }
+
+/* 선점 테스트 함수
+   현재 스레드의 우선순위가 ready_list의 맨 앞에 있는 스레드의 우선순위보다 낮으면
+   선점을 위해 스레드를 양보합니다. */
+void thread_preemption(void) {
+    if (!list_empty(&ready_list) &&
+        thread_current()->priority <
+            list_entry(list_front(&ready_list), struct thread, elem)
+                ->priority) // 현재 스레드의 우선순위가 ready_list의 맨 앞에 있는 스레드의 우선순위보다 낮으면
+        thread_yield();     // 선점을 위해 스레드를 양보
+}
 
 /* Sets the current thread's nice value to NICE. */
 void thread_set_nice(int nice UNUSED) { /* TODO: Your implementation goes here */ }
@@ -320,15 +348,14 @@ int thread_get_recent_cpu(void) {
     return 0;
 }
 
-/* Idle thread.  Executes when no other thread is ready to run.
+/* 유휴 스레드. 실행 가능한 다른 스레드가 없을 때 실행됩니다.
 
-   The idle thread is initially put on the ready list by
-   thread_start().  It will be scheduled once initially, at which
-   point it initializes idle_thread, "up"s the semaphore passed
-   to it to enable thread_start() to continue, and immediately
-   blocks.  After that, the idle thread never appears in the
-   ready list.  It is returned by next_thread_to_run() as a
-   special case when the ready list is empty. */
+   유휴 스레드는 처음에 thread_start()에 의해 ready_list에 추가됩니다.
+   최초 한 번 스케줄링되어 idle_thread를 초기화하고, thread_start()가
+   계속 실행될 수 있도록 전달받은 세마포어를 "up"한 다음 즉시 블록됩니다.
+   그 이후로는 유휴 스레드가 ready_list에 나타나지 않습니다.
+   ready_list가 비어있을 때 next_thread_to_run()에서 특별한 경우로
+   반환됩니다. */
 static void idle(void *idle_started_ UNUSED) {
     struct semaphore *idle_started = idle_started_;
 
@@ -336,22 +363,20 @@ static void idle(void *idle_started_ UNUSED) {
     sema_up(idle_started);
 
     for (;;) {
-        /* Let someone else run. */
+        /* 다른 스레드를 실행하도록 허용합니다. */
         intr_disable();
         thread_block();
 
-        /* Re-enable interrupts and wait for the next one.
+        /* 인터럽트를 다시 활성화하고 다음 인터럽트를 기다립니다.
 
-           The `sti' instruction disables interrupts until the
-           completion of the next instruction, so these two
-           instructions are executed atomically.  This atomicity is
-           important; otherwise, an interrupt could be handled
-           between re-enabling interrupts and waiting for the next
-           one to occur, wasting as much as one clock tick worth of
-           time.
+           'sti' 명령어는 다음 명령어가 완료될 때까지 인터럽트를 비활성화하므로,
+           이 두 명령어는 원자적으로 실행됩니다. 이러한 원자성은 매우 중요합니다.
+           만약 그렇지 않다면, 인터럽트를 다시 활성화한 후 다음 인터럽트가
+           발생하기를 기다리는 사이에 인터럽트가 처리될 수 있어서
+           최대 한 클록 틱만큼의 시간이 낭비될 수 있기 때문입니다.
 
-           See [IA32-v2a] "HLT", [IA32-v2b] "STI", and [IA32-v3a]
-           7.11.1 "HLT Instruction". */
+           참고: [IA32-v2a] "HLT", [IA32-v2b] "STI", [IA32-v3a]
+           7.11.1 "HLT Instruction" */
         asm volatile("sti; hlt" : : : "memory");
     }
 }
@@ -363,7 +388,7 @@ static void idle(void *idle_started_ UNUSED) {
    1. 인터럽트를 활성화하여 스레드가 인터럽트를 처리할 수 있도록 합니다.
    2. 전달받은 스레드 함수를 실행합니다.
    3. 스레드 함수가 반환되면 thread_exit()을 호출하여 스레드를 종료합니다.
-   
+
    이 함수는 스레드의 컨텍스트에서 실행되며, thread_create()에서 설정한
    스택과 레지스터 상태를 이용하여 새로운 실행 환경을 구성합니다. */
 static void kernel_thread(thread_func *function, void *aux) {
@@ -607,10 +632,10 @@ void thread_awake(int64_t ticks) {
 /* Returns a tid to use for a new thread. */
 static tid_t allocate_tid(void) {
     static tid_t next_tid = 1; // 다음에 할당할 스레드 ID
-    tid_t tid; // 할당된 스레드 ID
+    tid_t tid;                 // 할당된 스레드 ID
 
-    lock_acquire(&tid_lock); // 잠금 획득   
-    tid = next_tid++; // 다음에 할당할 스레드 ID 증가
+    lock_acquire(&tid_lock); // 잠금 획득
+    tid = next_tid++;        // 다음에 할당할 스레드 ID 증가
     lock_release(&tid_lock); // 잠금 해제
 
     return tid; // 할당된 스레드 ID 반환

@@ -135,6 +135,8 @@ void thread_yield (void);
 void thread_sleep(int64_t ticks);
 void thread_awake(int64_t ticks);
 bool compare_wakeup_ticks(const struct list_elem *a, const struct list_elem *b, void *aux);
+bool compare_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+void thread_preemption(void);
 
 int thread_get_priority (void);
 void thread_set_priority (int);
