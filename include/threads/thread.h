@@ -91,8 +91,12 @@ struct thread {
     char name[16];             /* 이름 (디버깅 용도). */
     int priority;              /* 우선순위. */
     int64_t wakeup_ticks;      /* 깨어날 시간. */
-    /* Shared between thread.c and synch.c. */
-    struct list_elem elem; /* 리스트 요소. */
+    struct list_elem elem;     /* 리스트 요소. */
+    int init_priority; /* 스레드가 priority 를 양도받았다가 다시 반납할 때 원래의 priority 를 복원할 수 있도록 고유의
+                        priority 값을 저장하는 변수. */
+    struct lock *wait_on_lock;       /* 스레드가 현재 얻기 위해 기다리고 있는 lock. */
+    struct list donations;           /* 자신에게 priority 를 나누어준 스레드들의 리스트. */
+    struct list_elem donation_elem; /* 이 리스트를 관리하기 위한 element. */
 
 #ifdef USERPROG
     /* Owned by userprog/process.c. */
@@ -144,6 +148,12 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
+
+bool cmp_sema_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+bool cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+void donate_priority(void);
+void remove_donor(struct lock *lock);
+void update_priority_before_donations(void);
 
 void do_iret(struct intr_frame *tf);
 

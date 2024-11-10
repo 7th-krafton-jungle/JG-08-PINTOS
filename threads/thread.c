@@ -200,7 +200,7 @@ tid_t thread_create(const char *name, int priority, thread_func *function, void 
     t->tf.eflags = FLAG_IF;               // 플래그 설정
 
     /* Add to run queue. */
-    thread_unblock(t); // 스레드를 준비 목록에 추가
+    thread_unblock(t);   // 스레드를 준비 목록에 추가
     thread_preemption(); // 선점 테스트 함수 호출
 
     return tid; // 스레드 ID 반환
@@ -291,6 +291,7 @@ void thread_yield(void) {
     ASSERT(!intr_context());
 
     old_level = intr_disable(); // 인터럽트 비활성화
+
     if (curr != idle_thread)
         /* 우선순위 순서대로 정렬된 상태를 유지하기 위해 list_insert_ordered() 사용
          * list_push_back()은 O(1)이지만 정렬되지 않은 상태로 삽입되어 스케줄링 시 우선순위 확인에 O(n) 소요
@@ -310,7 +311,8 @@ bool compare_priority(const struct list_elem *a, const struct list_elem *b, void
 /* 현재 스레드의 우선순위를 NEW_PRIORITY로 설정합니다. */
 void thread_set_priority(int new_priority) {
     thread_current()->priority = new_priority; // 현재 스레드의 우선순위를 새로운 우선순위로 설정
-    thread_preemption(); // 선점 테스트 함수 호출
+    update_priority_for_donations();           // 우선순위 갱신
+    thread_preemption();                       // 선점 테스트 함수 호출
 }
 
 /* 현재 스레드의 우선순위를 반환합니다. */
@@ -320,11 +322,14 @@ int thread_get_priority(void) { return thread_current()->priority; }
    현재 스레드의 우선순위가 ready_list의 맨 앞에 있는 스레드의 우선순위보다 낮으면
    선점을 위해 스레드를 양보합니다. */
 void thread_preemption(void) {
-    if (!list_empty(&ready_list) &&
-        thread_current()->priority <
-            list_entry(list_front(&ready_list), struct thread, elem)
-                ->priority) // 현재 스레드의 우선순위가 ready_list의 맨 앞에 있는 스레드의 우선순위보다 낮으면
-        thread_yield();     // 선점을 위해 스레드를 양보
+    if (thread_current() == idle_thread) // 유휴 스레드면 종료
+        return;
+    if (list_empty(&ready_list)) // ready_list가 비어있으면 종료
+        return;
+    struct thread *curr = thread_current();                                          // 현재 실행중인 스레드
+    struct thread *ready = list_entry(list_front(&ready_list), struct thread, elem); // ready_list의 맨 앞에 있는 스레드
+    if (curr->priority < ready->priority) // ready_list에 현재 실행중인 스레드보다 우선순위가 높은 스레드가 있으면
+        thread_yield();                   // 선점을 위해 스레드를 양보
 }
 
 /* Sets the current thread's nice value to NICE. */
@@ -412,6 +417,9 @@ static void init_thread(struct thread *t, const char *name, int priority) {
     t->tf.rsp = (uint64_t)t + PGSIZE - sizeof(void *); // 스레드 스택 포인터 설정
     t->priority = priority;                            // 스레드 우선순위 설정
     t->magic = THREAD_MAGIC;                           // 스레드 매직 넘버 설정
+    t->init_priority = priority;                       // 초기 우선순위 설정
+    t->wait_on_lock = NULL;                            // 대기 중인 잠금 설정
+    list_init(&t->donations);                          // 기부 목록 초기화
 }
 
 /* Chooses and returns the next thread to be scheduled.  Should
