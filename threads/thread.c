@@ -237,7 +237,7 @@ void thread_unblock(struct thread *t) {
     old_level = intr_disable();          // 인터럽트 비활성화
     ASSERT(t->status == THREAD_BLOCKED); // 스레드 상태가 차단된 상태인지 확인
 
-    list_insert_ordered(&ready_list, &t->elem, compare_priority, NULL); // 우선순위에 따라 정렬된 상태로 삽입
+    list_insert_ordered(&ready_list, &t->elem, cmp_thread_priority, NULL); // 우선순위에 따라 정렬된 상태로 삽입
 
     t->status = THREAD_READY;  // 스레드 상태를 준비 상태로 설정
     intr_set_level(old_level); // 이전 인터럽트 레벨 복원
@@ -296,7 +296,7 @@ void thread_yield(void) {
         /* 우선순위 순서대로 정렬된 상태를 유지하기 위해 list_insert_ordered() 사용
          * list_push_back()은 O(1)이지만 정렬되지 않은 상태로 삽입되어 스케줄링 시 우선순위 확인에 O(n) 소요
          * list_insert_ordered()는 삽입 시 O(n)이 소요되지만 정렬된 상태를 유지하여 스케줄링 성능 향상 */
-        list_insert_ordered(&ready_list, &curr->elem, compare_priority, NULL);
+        list_insert_ordered(&ready_list, &curr->elem, cmp_thread_priority, NULL);
 
     do_schedule(THREAD_READY); // 스케줄러 실행
     intr_set_level(old_level); // 이전 인터럽트 레벨 복원
@@ -304,7 +304,7 @@ void thread_yield(void) {
 
 /* 두 요소의 우선순위를 비교하는 함수
    우선순위가 높은 스레드가 먼저 실행되도록 함 */
-bool compare_priority(const struct list_elem *a, const struct list_elem *b, void *aux) {
+bool cmp_thread_priority(const struct list_elem *a, const struct list_elem *b, void *aux) {
     return list_entry(a, struct thread, elem)->priority > list_entry(b, struct thread, elem)->priority;
 }
 
@@ -312,7 +312,7 @@ bool compare_priority(const struct list_elem *a, const struct list_elem *b, void
 void thread_set_priority(int new_priority) {
     thread_current()->priority = new_priority; // 현재 스레드의 우선순위를 새로운 우선순위로 설정
     update_priority_for_donations();           // 우선순위 갱신
-    thread_preemption();                       // 선점 테스트 함수 호출
+    preempt_priority();                        // 우선순위 선점 스케줄링
 }
 
 /* 현재 스레드의 우선순위를 반환합니다. */
@@ -631,6 +631,7 @@ void thread_awake(int64_t ticks) {
         if (thr->wakeup_ticks <= ticks) {
             e = list_remove(e);  // 스레드 제거
             thread_unblock(thr); // 스레드 활성화
+            preempt_priority();  // 우선순위 선점 스케줄링
         } else
             break;
     }
@@ -647,4 +648,16 @@ static tid_t allocate_tid(void) {
     lock_release(&tid_lock); // 잠금 해제
 
     return tid; // 할당된 스레드 ID 반환
+}
+
+/* 우선순위 선점 스케줄링 */
+void preempt_priority(void) {
+    if (thread_current() == idle_thread) // 현재 실행중인 스레드가 idle_thread라면 바로 반환
+        return;
+    if (list_empty(&ready_list)) // ready_list가 비어있다면 바로 반환
+        return;
+    struct thread *curr = thread_current();                                          // 현재 실행중인 스레드
+    struct thread *ready = list_entry(list_front(&ready_list), struct thread, elem); // ready_list의 첫 번째 요소F
+    if (curr->priority < ready->priority) // ready_list에 현재 실행중인 스레드보다 우선순위가 높은 스레드가 있으면
+        thread_yield();                   // 스레드 양보
 }

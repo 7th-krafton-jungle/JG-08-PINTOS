@@ -91,7 +91,9 @@ struct thread {
     char name[16];             /* 이름 (디버깅 용도). */
     int priority;              /* 우선순위. */
     int64_t wakeup_ticks;      /* 깨어날 시간. */
+
     struct list_elem elem;     /* 리스트 요소. */
+
     int init_priority; /* 스레드가 priority 를 양도받았다가 다시 반납할 때 원래의 priority 를 복원할 수 있도록 고유의
                         priority 값을 저장하는 변수. */
     struct lock *wait_on_lock;       /* 스레드가 현재 얻기 위해 기다리고 있는 lock. */
@@ -138,7 +140,7 @@ void thread_yield(void);
 void thread_sleep(int64_t ticks);
 void thread_awake(int64_t ticks);
 bool compare_wakeup_ticks(const struct list_elem *a, const struct list_elem *b, void *aux);
-bool compare_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
+bool cmp_thread_priority(const struct list_elem *a, const struct list_elem *b, void *aux UNUSED);
 void thread_preemption(void);
 
 int thread_get_priority(void);
@@ -149,6 +151,7 @@ void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
 
+void preempt_priority(void);
 bool cmp_sema_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
 bool cmp_donation_priority(const struct list_elem *a, const struct list_elem *b, void *aux);
 void donate_priority(void);
