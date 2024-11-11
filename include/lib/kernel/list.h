@@ -77,7 +77,7 @@
  *
  * - "interior element": An element that is not the head or
  * tail, that is, a real list element.  An empty list does
- * not have any interior elements.*/
+ * not have any interior elements. */
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -95,11 +95,9 @@ struct list {
 	struct list_elem tail;      /* List tail. */
 };
 
-/* Converts pointer to list element LIST_ELEM into a pointer to
-   the structure that LIST_ELEM is embedded inside.  Supply the
-   name of the outer structure STRUCT and the member name MEMBER
-   of the list element.  See the big comment at the top of the
-   file for an example. */
+/* LIST_ELEM 포인터를 해당 리스트 요소가 포함된 구조체의 포인터로 변환합니다.
+   외부 구조체의 이름 STRUCT와 리스트 요소의 멤버 이름 MEMBER를 제공해야 합니다.
+   사용 예시는 파일 상단의 큰 주석을 참조하세요. */
 #define list_entry(LIST_ELEM, STRUCT, MEMBER)           \
 	((STRUCT *) ((uint8_t *) &(LIST_ELEM)->next     \
 		- offsetof (STRUCT, MEMBER.next)))
