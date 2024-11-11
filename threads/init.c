@@ -75,9 +75,13 @@ int main(void) {
     argv = read_command_line(); // 커널 명령줄을 인수로 분해
     argv = parse_options(argv); // 옵션 파싱
 
-    /* Initialize ourselves as a thread so we can use locks,
-       then enable console locking. */
-    thread_init();  // 스레드 초기화
+    /* 스레드로 자신을 초기화하여 잠금을 사용할 수 있게 하고, 콘솔 잠금을 활성화합니다. */
+    /* 스레드 시스템을 초기화합니다.
+       현재 실행 중인 코드를 스레드로 변환하고
+       ready_list, sleep_list, destruction_req 등의 전역 리스트와
+       tid_lock을 초기화합니다.
+       또한 initial_thread를 설정하고 초기화합니다. */
+    thread_init();
     console_init(); // 콘솔 초기화
 
     /* Initialize memory system. */
@@ -90,7 +94,7 @@ int main(void) {
     gdt_init(); // GDT 초기화
 #endif
 
-    /* Initialize interrupt handlers. */
+    /* 인터럽트 초기화 */
     intr_init();  // 인터럽트 초기화
     timer_init(); // 타이머 초기화
     kbd_init();   // 키보드 초기화
@@ -99,7 +103,11 @@ int main(void) {
     exception_init(); // 예외 초기화
     syscall_init();   // 시스템 호출 초기화
 #endif
-    /* Start thread scheduler and enable interrupts. */
+    /* 스레드 스케줄러를 시작하고 인터럽트를 활성화합니다.
+       thread_start()는 다음과 같은 작업을 수행합니다:
+       1. idle 스레드를 생성하여 CPU가 할 일이 없을 때 실행되도록 합니다.
+       2. 선점형 스레드 스케줄링을 시작하기 위해 인터럽트를 활성화합니다.
+       3. idle 스레드가 초기화될 때까지 대기합니다. */
     thread_start();      // 스레드 스케줄러 시작
     serial_init_queue(); // 시리얼 초기화
     timer_calibrate();   // 타이머 조정
@@ -122,7 +130,11 @@ int main(void) {
     /* Finish up. */
     if (power_off_when_done)
         power_off(); // 전원 끄기
-    thread_exit();   // 스레드 종료
+    /* 현재 실행 중인 스레드를 종료하고 스케줄러에 의해 다음 스레드가 실행되도록 합니다.
+       이 함수는 init.c의 main() 함수가 종료될 때 호출되며,
+       초기 스레드(initial thread)를 종료시키고 시스템의 정상적인 종료를 수행합니다.
+       thread_exit() 호출 후에는 더 이상 이 코드로 돌아오지 않습니다. */
+    thread_exit(); // 스레드 종료
 }
 
 /* Clear BSS */
